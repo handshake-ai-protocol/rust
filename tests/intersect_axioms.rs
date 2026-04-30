@@ -54,13 +54,49 @@ fn exact_key() -> impl Strategy<Value = (String, Value)> {
     "us-east-1|eu-west-1".prop_map(|s: String| ("region".to_string(), Value::String(s)))
 }
 
+/// One time_window key. Hours 0..=23 on 2026-01-01; intersection narrows
+/// `[max(start), min(end)]`. We always emit `start < end` so individual
+/// inputs are well-formed; the intersection may still be empty.
+fn time_window_key() -> impl Strategy<Value = (String, Value)> {
+    (0u8..23, 0u8..23).prop_map(|(a, b)| {
+        let (s, e) = if a < b { (a, b) } else { (b, a + 1) };
+        (
+            "active_window".to_string(),
+            Value::Array(vec![
+                Value::String(format!("2026-01-01T{s:02}:00:00Z")),
+                Value::String(format!("2026-01-01T{e:02}:00:00Z")),
+            ]),
+        )
+    })
+}
+
+/// One rate_limit key with `per_second` ∈ [1, 100].
+fn rate_limit_key() -> impl Strategy<Value = (String, Value)> {
+    (1u32..100, 1u32..100).prop_map(|(ps, pm)| {
+        let mut o = Map::new();
+        o.insert("per_second".into(), Value::from(ps));
+        o.insert("per_minute".into(), Value::from(pm));
+        ("api_rate_limit".to_string(), Value::Object(o))
+    })
+}
+
+/// One resource_path key. Half emit a wildcard prefix `/v1/*`, half emit
+/// a concrete path; the lattice tests then narrow them.
+fn resource_path_key() -> impl Strategy<Value = (String, Value)> {
+    "/v1/users|/v1/users/me|/v1/orders|/v1/\\*"
+        .prop_map(|s: String| ("api_path".to_string(), Value::String(s)))
+}
+
 /// A constraint object built from any subset of the supported keys.
 fn constraint_set() -> impl Strategy<Value = Map<String, Value>> {
     let one_key = prop_oneof![
         numeric_max_key(),
         numeric_min_key(),
         enum_key(),
-        exact_key()
+        exact_key(),
+        time_window_key(),
+        rate_limit_key(),
+        resource_path_key(),
     ];
     prop::collection::vec(one_key, 0..5).prop_map(|pairs| {
         let mut m = Map::new();

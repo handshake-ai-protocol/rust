@@ -199,23 +199,10 @@ fn intersect_one(
             }
             Ok(Value::from(narrowed))
         }
-        ConstraintType::TimeWindow | ConstraintType::RateLimit => {
-            // Phase 2 ships exact-equality semantics for these; the handoff
-            // §7 Phase 2 lists the algebra but the test vectors don't
-            // exercise them. Phase 2.1 will replace this with the full
-            // typed implementation per spec §10.
-            if d == r {
-                Ok(d.clone())
-            } else {
-                Err(ScopeViolation {
-                    key: key.to_string(),
-                    reason: format!("constraint {key} differs between delegation and request (full {ty:?} algebra is Phase 2.1; exact match required for now)"),
-                })
-            }
-        }
-        ConstraintType::StringPattern
-        | ConstraintType::ResourcePath
-        | ConstraintType::ExactMatch => {
+        ConstraintType::TimeWindow => intersect_time_window(key, d, r),
+        ConstraintType::RateLimit => intersect_rate_limit(key, d, r),
+        ConstraintType::ResourcePath => intersect_resource_path(key, d, r),
+        ConstraintType::StringPattern | ConstraintType::ExactMatch => {
             if d == r {
                 Ok(d.clone())
             } else {
@@ -228,6 +215,133 @@ fn intersect_one(
             }
         }
     }
+}
+
+fn intersect_time_window(key: &str, d: &Value, r: &Value) -> Result<Value, ScopeViolation> {
+    let (ds, de) = parse_window(key, "delegated", d)?;
+    let (rs, re) = parse_window(key, "requested", r)?;
+    let start = if ds >= rs { ds } else { rs };
+    let end = if de <= re { de } else { re };
+    if start >= end {
+        return Err(ScopeViolation {
+            key: key.to_string(),
+            reason: format!(
+                "time_window {key} intersection empty: max(start) {start} ≥ min(end) {end}"
+            ),
+        });
+    }
+    let start_str = if ds >= rs {
+        d.as_array().unwrap()[0].clone()
+    } else {
+        r.as_array().unwrap()[0].clone()
+    };
+    let end_str = if de <= re {
+        d.as_array().unwrap()[1].clone()
+    } else {
+        r.as_array().unwrap()[1].clone()
+    };
+    Ok(Value::Array(vec![start_str, end_str]))
+}
+
+fn parse_window(
+    key: &str,
+    side: &str,
+    v: &Value,
+) -> Result<(chrono::DateTime<chrono::Utc>, chrono::DateTime<chrono::Utc>), ScopeViolation> {
+    let arr = v.as_array().ok_or_else(|| ScopeViolation {
+        key: key.to_string(),
+        reason: format!("{side} {key} time_window must be a 2-element array"),
+    })?;
+    if arr.len() != 2 {
+        return Err(ScopeViolation {
+            key: key.to_string(),
+            reason: format!("{side} {key} time_window must be exactly [start, end]"),
+        });
+    }
+    let parse_one = |v: &Value| -> Result<chrono::DateTime<chrono::Utc>, ScopeViolation> {
+        let s = v.as_str().ok_or_else(|| ScopeViolation {
+            key: key.to_string(),
+            reason: format!("{side} {key} time_window endpoints must be RFC 3339 strings"),
+        })?;
+        chrono::DateTime::parse_from_rfc3339(s)
+            .map(|dt| dt.with_timezone(&chrono::Utc))
+            .map_err(|e| ScopeViolation {
+                key: key.to_string(),
+                reason: format!("{side} {key} time_window endpoint not RFC 3339: {e}"),
+            })
+    };
+    Ok((parse_one(&arr[0])?, parse_one(&arr[1])?))
+}
+
+fn intersect_rate_limit(key: &str, d: &Value, r: &Value) -> Result<Value, ScopeViolation> {
+    let dm = d.as_object().ok_or_else(|| ScopeViolation {
+        key: key.to_string(),
+        reason: format!("delegated {key} rate_limit must be an object"),
+    })?;
+    let rm = r.as_object().ok_or_else(|| ScopeViolation {
+        key: key.to_string(),
+        reason: format!("requested {key} rate_limit must be an object"),
+    })?;
+    let mut out = Map::new();
+    let mut keys: Vec<&String> = dm.keys().chain(rm.keys()).collect();
+    keys.sort();
+    keys.dedup();
+    for k in keys {
+        match (dm.get(k), rm.get(k)) {
+            (Some(dv), None) => {
+                out.insert(k.clone(), dv.clone());
+            }
+            (None, Some(rv)) => {
+                out.insert(k.clone(), rv.clone());
+            }
+            (Some(dv), Some(rv)) => {
+                let dn = dv.as_f64().ok_or_else(|| ScopeViolation {
+                    key: key.to_string(),
+                    reason: format!("delegated {key}.{k} not numeric"),
+                })?;
+                let rn = rv.as_f64().ok_or_else(|| ScopeViolation {
+                    key: key.to_string(),
+                    reason: format!("requested {key}.{k} not numeric"),
+                })?;
+                if rn > dn {
+                    return Err(ScopeViolation {
+                        key: key.to_string(),
+                        reason: format!("requested {key}.{k}={rn} exceeds delegated {dn}"),
+                    });
+                }
+                out.insert(k.clone(), if rn <= dn { rv.clone() } else { dv.clone() });
+            }
+            (None, None) => unreachable!(),
+        }
+    }
+    Ok(Value::Object(out))
+}
+
+fn intersect_resource_path(key: &str, d: &Value, r: &Value) -> Result<Value, ScopeViolation> {
+    let ds = d.as_str().ok_or_else(|| ScopeViolation {
+        key: key.to_string(),
+        reason: format!("delegated {key} resource_path must be a string"),
+    })?;
+    let rs = r.as_str().ok_or_else(|| ScopeViolation {
+        key: key.to_string(),
+        reason: format!("requested {key} resource_path must be a string"),
+    })?;
+    if let Some(prefix) = ds.strip_suffix("/*") {
+        if rs == prefix || rs.starts_with(&format!("{prefix}/")) {
+            return Ok(r.clone());
+        }
+        return Err(ScopeViolation {
+            key: key.to_string(),
+            reason: format!("requested {key}={rs:?} not under delegated prefix {ds:?}"),
+        });
+    }
+    if ds == rs {
+        return Ok(r.clone());
+    }
+    Err(ScopeViolation {
+        key: key.to_string(),
+        reason: format!("requested {key}={rs:?} not equal to delegated {ds:?} (no wildcard)"),
+    })
 }
 
 fn both_numbers(key: &str, d: &Value, r: &Value) -> Result<(f64, f64), ScopeViolation> {

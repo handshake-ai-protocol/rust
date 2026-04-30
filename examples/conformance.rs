@@ -28,6 +28,7 @@ use std::fs;
 
 const REPO_ROOT_FIXTURES: &str = "tests/conformance/fixtures/jcs.json";
 const VECTORS_DIR: &str = "packages/handshake-spec/test-vectors/v0.2.3/core";
+const ERROR_CODES_DIR: &str = "tests/conformance/error_codes";
 const VECTOR_FILES: &[(&str, &str)] = &[
     ("001-valid-handshake", "001-valid-handshake.json"),
     ("002-expired-delegation", "002-expired-delegation.json"),
@@ -245,7 +246,14 @@ fn run_vector(vector_id: &str, vector_path: &str) -> Value {
 
     let req_struct: handshake::models::HandshakeRequest =
         serde_json::from_value(signed_request.clone()).expect("parse signed request");
-    let receiver_did = req_struct.aud.clone();
+    // Some error-code vectors (e.g. 004 aud_mismatch) deliberately set
+    // request.aud to a DID *different* from the receiver. Honour an explicit
+    // `input.receiver_did` override; otherwise default to request.aud.
+    let receiver_did = input
+        .get("receiver_did")
+        .and_then(Value::as_str)
+        .map(str::to_string)
+        .unwrap_or_else(|| req_struct.aud.clone());
     let now = chrono::DateTime::parse_from_rfc3339(&now_str)
         .expect("parse context.now")
         .with_timezone(&chrono::Utc);
@@ -364,6 +372,39 @@ fn run_all_vectors() -> Vec<Value> {
         .collect()
 }
 
+/// Walk tests/conformance/error_codes/*.json — malformed inputs whose only
+/// job is to assert every implementation returns the same errorCode at the
+/// same rejected_at_step. The aggregator builds a cross-impl matrix.
+fn run_error_code_vectors() -> Vec<Value> {
+    let mut out = Vec::new();
+    let dir = match fs::read_dir(ERROR_CODES_DIR) {
+        Ok(d) => d,
+        Err(_) => return out,
+    };
+    let mut entries: Vec<_> = dir
+        .filter_map(Result::ok)
+        .filter(|e| e.path().extension().and_then(|s| s.to_str()) == Some("json"))
+        .collect();
+    entries.sort_by_key(|e| e.path());
+    for entry in entries {
+        let path = entry.path();
+        let raw = fs::read_to_string(&path).expect("read error_code vector");
+        let v: Value = serde_json::from_str(&raw).expect("parse error_code vector");
+        let vid = v
+            .get("vector_id")
+            .and_then(Value::as_str)
+            .map(str::to_string)
+            .unwrap_or_else(|| {
+                path.file_stem()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or("?")
+                    .to_string()
+            });
+        out.push(run_vector(&vid, path.to_str().expect("path utf8")));
+    }
+    out
+}
+
 /// Cross-call replay protection: verify vector 001 twice in a row sharing
 /// a single nonce store. The first call must accept; the second must
 /// reject with `replay_detected`. This mirrors what the Py / TS / Go
@@ -467,6 +508,7 @@ fn main() {
         "mldsa65_kat": run_mldsa65_kat(),
         "vector_001": vector_001_phase1_compat(),
         "vectors": run_all_vectors(),
+        "error_code_vectors": run_error_code_vectors(),
         "replay_check": run_replay_check(),
     });
     println!(
