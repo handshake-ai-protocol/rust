@@ -443,7 +443,7 @@ where
             }
         }
 
-        verify_link(link, idx, chain_len, &cumulative, ctx)?;
+        verify_link(link, idx, chain_len, &cumulative, &req.capability.name, ctx)?;
 
         // Find the capability inside this link that matches the one being
         // requested. (A delegation may grant multiple capabilities; the
@@ -522,6 +522,7 @@ fn verify_link<K, N, R>(
     idx: usize,
     chain_len: usize,
     parent: &Option<(String, Map<String, Value>)>,
+    requested_capability_name: &str,
     ctx: &mut VerifyContext<'_, K, N, R>,
 ) -> Result<(), RefusalReason>
 where
@@ -616,21 +617,31 @@ where
 
     // 7e: delegable + sub_delegation_depth_remaining for non-final links
     if idx + 1 < chain_len {
-        // This link delegates further down the chain. The capability we
-        // narrow on must be `delegable=true` and the depth budget must
-        // be nonzero.
-        let any_delegable = link
+        // This link delegates further down the chain. The *specific
+        // capability* the request is asking for must be `delegable=true`
+        // on this link — checking "any cap on the link is delegable"
+        // would let an attacker chain a non-delegable capability A by
+        // co-mingling it with an unrelated delegable capability B.
+        // (See architect review of T007 wrap-up; ADR-0007.)
+        if let Some(matched) = link
             .capabilities
             .iter()
-            .any(|c| c.delegable.unwrap_or(false));
-        if !any_delegable {
-            return Err(RefusalReason::link(
-                ErrorCode::ChainBroken,
-                RejectStep::DelegationChainWalk,
-                &link.id,
-                "intermediate delegation has no delegable capability",
-            ));
+            .find(|c| c.name == requested_capability_name)
+        {
+            if !matched.delegable.unwrap_or(false) {
+                return Err(RefusalReason::link(
+                    ErrorCode::ChainBroken,
+                    RejectStep::DelegationChainWalk,
+                    &link.id,
+                    format!(
+                        "intermediate delegation: capability {requested_capability_name} is not delegable on this link"
+                    ),
+                ));
+            }
         }
+        // If the requested capability isn't on this link at all, the
+        // caller's `.find(|c| c.name == req.capability.name)` (right
+        // after this function returns) emits the canonical ChainBroken.
         if link.sub_delegation_depth_remaining == 0 {
             return Err(RefusalReason::link(
                 ErrorCode::ChainBroken,
@@ -1238,6 +1249,123 @@ mod tests {
         assert!(
             err.detail.contains("does not match prior link sub"),
             "detail should explain the integrity violation, got: {}",
+            err.detail
+        );
+    }
+
+    /// Step 7e enforcement: when the *requested* capability on an
+    /// intermediate link is `delegable=false`, the chain MUST be rejected
+    /// even if some *other* capability on that same link is
+    /// `delegable=true`. Co-mingling an unrelated delegable capability
+    /// MUST NOT be enough to launder a non-delegable one — that would be
+    /// an authorization-escalation path. (Architect-flagged case from
+    /// the T007 wrap-up review; mirrored as conformance vector
+    /// `error_codes/009-non-delegable-capability.json`.)
+    #[test]
+    fn chain_broken_when_requested_cap_not_delegable_even_if_other_cap_is() {
+        let alice_kp = Keypair::generate();
+        let agent1_kp = Keypair::generate();
+        let agent2_kp = Keypair::generate();
+        let svc_did = "did:hsk:svc:test-service";
+
+        let mut root = DelegationToken {
+            version: SPEC_VERSION.to_string(),
+            kind: "DelegationToken".to_string(),
+            id: "dt_009a".to_string(),
+            iss: "did:hsk:user:alice".to_string(),
+            sub: "did:hsk:agent:agent1".to_string(),
+            aud: "did:hsk:agent:agent1".to_string(),
+            iat: "2026-04-29T14:02:11Z".to_string(),
+            nbf: "2026-04-29T14:02:11Z".to_string(),
+            exp: "2026-04-29T14:32:11Z".to_string(),
+            capabilities: vec![
+                // The requested cap, marked non-delegable.
+                Capability {
+                    name: "billing.invoices.read".to_string(),
+                    constraints: Some(json!({"max_invoices": 100})),
+                    delegable: Some(false),
+                },
+                // An unrelated decoy cap, marked delegable.
+                Capability {
+                    name: "billing.invoices.export".to_string(),
+                    constraints: Some(json!({"max_invoices": 100})),
+                    delegable: Some(true),
+                },
+            ],
+            sub_delegation_depth_remaining: 1,
+            parent_delegation_id: None,
+            alg: SignatureAlgorithm::EdDsa,
+            signature: None,
+        };
+        let root_msg = bytes_to_sign(&root).expect("canonicalize root");
+        root.signature = Some(alice_kp.sign_b64(&root_msg));
+
+        let mut leaf = DelegationToken {
+            version: SPEC_VERSION.to_string(),
+            kind: "DelegationToken".to_string(),
+            id: "dt_009b".to_string(),
+            iss: "did:hsk:agent:agent1".to_string(),
+            sub: "did:hsk:agent:agent2".to_string(),
+            aud: "did:hsk:agent:agent2".to_string(),
+            iat: "2026-04-29T14:03:00Z".to_string(),
+            nbf: "2026-04-29T14:03:00Z".to_string(),
+            exp: "2026-04-29T14:33:00Z".to_string(),
+            capabilities: vec![Capability {
+                name: "billing.invoices.read".to_string(),
+                constraints: Some(json!({"max_invoices": 50})),
+                delegable: Some(false),
+            }],
+            sub_delegation_depth_remaining: 0,
+            parent_delegation_id: Some("dt_009a".to_string()),
+            alg: SignatureAlgorithm::EdDsa,
+            signature: None,
+        };
+        let leaf_msg = bytes_to_sign(&leaf).expect("canonicalize leaf");
+        leaf.signature = Some(agent1_kp.sign_b64(&leaf_msg));
+
+        let mut request = HandshakeRequest {
+            version: SPEC_VERSION.to_string(),
+            kind: "HandshakeRequest".to_string(),
+            id: "hs_009".to_string(),
+            iss: "did:hsk:agent:agent2".to_string(),
+            aud: svc_did.to_string(),
+            iat: "2026-04-29T14:14:32Z".to_string(),
+            nonce: "nonce-009-rs".to_string(),
+            agent_attestation: json!({"deployer": "did:hsk:org:o", "model": "claude-sonnet-4-5"}),
+            capability: Capability {
+                name: "billing.invoices.read".to_string(),
+                constraints: Some(json!({"max_invoices": 25})),
+                delegable: None,
+            },
+            delegation_chain: vec![root, leaf],
+            alg: SignatureAlgorithm::EdDsa,
+            signature: None,
+        };
+        let req_msg = bytes_to_sign(&request).expect("canonicalize req");
+        request.signature = Some(agent2_kp.sign_b64(&req_msg));
+
+        let mut resolver = StaticKeyResolver::new();
+        resolver.insert("did:hsk:user:alice", alice_kp.public_key());
+        resolver.insert("did:hsk:agent:agent1", agent1_kp.public_key());
+        resolver.insert("did:hsk:agent:agent2", agent2_kp.public_key());
+
+        let mut nonces = InMemoryNonceStore::new(120);
+        let revs = StaticRevocationResolver::default();
+        let mut ctx = VerifyContext {
+            receiver_did: svc_did,
+            now: parse_ts("2026-04-29T14:14:32Z").unwrap(),
+            skew_secs: DEFAULT_SKEW_SECS,
+            keys: &resolver,
+            nonces: &mut nonces,
+            revocations: &revs,
+        };
+        let err = verify_handshake_request(&request, &mut ctx).expect_err("must reject");
+        assert_eq!(err.error_code, ErrorCode::ChainBroken);
+        assert_eq!(err.rejected_at_step, RejectStep::DelegationChainWalk);
+        assert_eq!(err.rejected_delegation_id.as_deref(), Some("dt_009a"));
+        assert!(
+            err.detail.contains("billing.invoices.read") && err.detail.contains("not delegable"),
+            "detail should name the non-delegable capability, got: {}",
             err.detail
         );
     }
