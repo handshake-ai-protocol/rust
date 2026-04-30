@@ -24,10 +24,12 @@
 
 pub mod error;
 pub mod hash;
+pub mod intersect;
 pub mod jcs;
 pub mod mldsa;
 pub mod models;
 pub mod sign;
+pub mod verify;
 
 pub use error::Error;
 

@@ -22,9 +22,14 @@ serde_jcs = "0.1"
 base64 = "0.22"
 hex = "0.4"
 thiserror = "2.0"
+# Phase 2: timestamp parsing for the freshness window + chain walk windows.
+# `chrono` is single-purpose here (no clock access — `now` is always passed in
+# explicitly by the verifier context, which is mandatory for replayable
+# conformance vectors).
+chrono = { version = "0.4", default-features = false, features = ["serde", "alloc"] }
 
 [dev-dependencies]
-serde_json = { version = "1.0", features = ["preserve_order"] }
+proptest = "1.5"
 
 [profile.release]
 lto = true
