@@ -29,9 +29,9 @@
 //! Rust ↔ Go for the KAT.
 
 use crate::error::Error;
-use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
-use ml_dsa::{KeyGen, MlDsa65, signature::Verifier};
+use base64::Engine;
+use ml_dsa::{signature::Verifier, KeyGen, MlDsa65};
 use rand_core::{OsRng, RngCore};
 
 /// Public-key length for ML-DSA-65 (FIPS 204).

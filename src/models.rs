@@ -1,10 +1,15 @@
 //! Serde models mirroring the v0.2.3 JSON Schemas under
-//! `packages/handshake-spec/schemas/v0.2.3/`. A `tests/schema_consistency.rs`
-//! integration test (Phase 1.1) compares each model's JSON Schema export
-//! against the on-disk schema file; CI fails on drift.
+//! `packages/handshake-spec/schemas/v0.2.3/`.
 //!
 //! Round-tripping a model through serde and then [`crate::jcs::canonicalize`]
 //! produces the byte string EdDSA / ML-DSA-65 signatures cover.
+//!
+//! NOTE: an automated `tests/schema_consistency.rs` drift check that compares
+//! each `#[derive(Serialize)]` against the on-disk JSON Schema file is part
+//! of Phase 2 (`schemars`-based round-trip), not Phase 1. For Phase 1, drift
+//! is caught by the cross-language conformance fixtures in
+//! `tests/conformance/fixtures/jcs.json` (which include unsigned-form
+//! protocol-message snapshots).
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;

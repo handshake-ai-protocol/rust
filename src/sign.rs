@@ -4,8 +4,8 @@
 //! when serialized into protocol messages (see `_common.json#/$defs/base64url`).
 
 use crate::error::Error;
-use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+use base64::Engine;
 use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
 use rand_core::{OsRng, RngCore};
 

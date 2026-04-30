@@ -15,11 +15,12 @@
 //! ```
 
 use handshake::{hash, jcs, mldsa, sign};
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 use std::fs;
 
 const REPO_ROOT_FIXTURES: &str = "tests/conformance/fixtures/jcs.json";
-const VECTOR_001: &str = "packages/handshake-spec/test-vectors/v0.2.3/core/001-valid-handshake.json";
+const VECTOR_001: &str =
+    "packages/handshake-spec/test-vectors/v0.2.3/core/001-valid-handshake.json";
 
 fn jcs_sha256_hex(v: &Value) -> String {
     let bytes = jcs::canonicalize(v).expect("canonicalize");
@@ -122,11 +123,17 @@ fn run_vector_001() -> Value {
     let raw = fs::read_to_string(VECTOR_001).expect("read vector 001");
     let v: Value = serde_json::from_str(&raw).expect("parse vector 001");
 
-    let expected_result = v["expected"]["result"].as_str().unwrap_or("accept").to_string();
+    let expected_result = v["expected"]["result"]
+        .as_str()
+        .unwrap_or("accept")
+        .to_string();
 
     // ---- delegation ----
     let mut delegation = v["input"]["delegation"].clone();
-    delegation.as_object_mut().expect("delegation object").remove("signature");
+    delegation
+        .as_object_mut()
+        .expect("delegation object")
+        .remove("signature");
     let unsigned_del_sha = jcs_sha256_hex(&delegation);
 
     let user_kp = sign::Keypair::generate();
@@ -155,17 +162,17 @@ fn run_vector_001() -> Value {
         .as_object_mut()
         .expect("request object")
         .remove("signature");
-    request_for_hash
-        .as_object_mut()
-        .unwrap()
-        .insert("delegation_chain".into(), Value::Array(vec![delegation.clone()]));
+    request_for_hash.as_object_mut().unwrap().insert(
+        "delegation_chain".into(),
+        Value::Array(vec![delegation.clone()]),
+    );
     let unsigned_req_sha = jcs_sha256_hex(&request_for_hash);
 
     let mut request_for_signing = request_for_hash.clone();
-    request_for_signing
-        .as_object_mut()
-        .unwrap()
-        .insert("delegation_chain".into(), Value::Array(vec![signed_delegation]));
+    request_for_signing.as_object_mut().unwrap().insert(
+        "delegation_chain".into(),
+        Value::Array(vec![signed_delegation]),
+    );
 
     let req_canonical = jcs::canonicalize(&request_for_signing).expect("canon request");
     let req_sig_b64 = agent_kp.sign_b64(&req_canonical);
@@ -189,5 +196,8 @@ fn main() {
         "mldsa65_kat": run_mldsa65_kat(),
         "vector_001": run_vector_001(),
     });
-    println!("{}", serde_json::to_string_pretty(&report).expect("serialize report"));
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&report).expect("serialize report")
+    );
 }
