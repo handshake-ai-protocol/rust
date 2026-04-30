@@ -397,6 +397,24 @@ where
     let mut cumulative: Option<(String, Map<String, Value>)> = None;
     let chain_len = req.delegation_chain.len();
     for (idx, link) in req.delegation_chain.iter().enumerate() {
+        // Step 7d: issuer-chain integrity. Each non-root link's `iss` must
+        // equal the prior link's `sub`. Enforced here at the call site so
+        // we have direct access to the full chain.
+        if idx > 0 {
+            let prev = &req.delegation_chain[idx - 1];
+            if link.iss != prev.sub {
+                return Err(RefusalReason::link(
+                    ErrorCode::ChainBroken,
+                    RejectStep::DelegationChainWalk,
+                    &link.id,
+                    format!(
+                        "link iss={} does not match prior link sub={}",
+                        link.iss, prev.sub
+                    ),
+                ));
+            }
+        }
+
         verify_link(link, idx, chain_len, &cumulative, ctx)?;
 
         // Find the capability inside this link that matches the one being
@@ -562,25 +580,11 @@ where
         ));
     }
 
-    // 7d: issuer-chain integrity. Each non-root link's issuer must equal
-    // the prior link's subject (parent.sub == link.iss).
-    if idx > 0 {
-        let prev = &parent
-            .as_ref()
-            .expect("non-root link has a parent capability binding")
-            .0;
-        // parent.0 is the capability name, not the prior link's `sub`. We
-        // need the full chain to check this; the caller iterates through
-        // `req.delegation_chain` so we can re-derive `prev_sub` from the
-        // request's chain rather than threading it through.
-        // … but we don't have direct access here. The simplest fix is to
-        // pass the prior `sub` in via `parent` or to do the integrity
-        // check at the call site. For Phase 2 we move that check into
-        // `verify_handshake_request` proper — keeping `verify_link` focused
-        // on per-link semantics. The early return below is unreachable
-        // under correct use; left as a defensive guard.
-        let _ = prev;
-    }
+    // 7d: issuer-chain integrity is enforced at the call site in
+    // `verify_handshake_request` where the full chain is in scope.
+    // `parent` here is the chain-cumulative capability binding, used by
+    // 7e/8 for scope intersection — not for issuer-chain integrity.
+    let _ = parent;
 
     // 7e: delegable + sub_delegation_depth_remaining for non-final links
     if idx + 1 < chain_len {
@@ -1061,5 +1065,113 @@ mod tests {
         };
         let err = verify_handshake_request(&req, &mut ctx).expect_err("revoked");
         assert_eq!(err.error_code, ErrorCode::CredentialRevoked);
+    }
+
+    /// Step 7d enforcement: a two-link chain whose middle link's `iss` does
+    /// NOT match the prior link's `sub` must be rejected with
+    /// `chain_broken` at `delegation_chain_walk`. This guards against an
+    /// attacker splicing a valid leaf delegation onto an unrelated root.
+    #[test]
+    fn chain_broken_when_iss_does_not_match_prior_sub() {
+        let user_kp = Keypair::generate();
+        let mallory_kp = Keypair::generate();
+        let agent_kp = Keypair::generate();
+        let svc_did = "did:hsk:svc:test-service";
+
+        // Root: alice → bob (delegable, depth 1)
+        let mut root = DelegationToken {
+            version: SPEC_VERSION.to_string(),
+            kind: "DelegationToken".to_string(),
+            id: "dt_root".to_string(),
+            iss: "did:hsk:user:alice".to_string(),
+            sub: "did:hsk:agent:bob".to_string(),
+            aud: "did:hsk:agent:bob".to_string(),
+            iat: "2026-04-29T14:02:11Z".to_string(),
+            nbf: "2026-04-29T14:02:11Z".to_string(),
+            exp: "2026-04-29T14:32:11Z".to_string(),
+            capabilities: vec![Capability {
+                name: "billing.invoices.read".to_string(),
+                constraints: Some(json!({"max_invoices": 100})),
+                delegable: Some(true),
+            }],
+            sub_delegation_depth_remaining: 1,
+            parent_delegation_id: None,
+            alg: SignatureAlgorithm::EdDsa,
+            signature: None,
+        };
+        let root_msg = bytes_to_sign(&root).expect("canonicalize root");
+        root.signature = Some(user_kp.sign_b64(&root_msg));
+
+        // Spliced leaf: signed by an UNRELATED principal `mallory`, whose
+        // `iss` (mallory) ≠ root.sub (bob). Even though the signature
+        // verifies under mallory's key, Step 7d must reject this chain.
+        let mut spliced_leaf = DelegationToken {
+            version: SPEC_VERSION.to_string(),
+            kind: "DelegationToken".to_string(),
+            id: "dt_spliced".to_string(),
+            iss: "did:hsk:attacker:mallory".to_string(),
+            sub: "did:hsk:agent:bob".to_string(),
+            aud: "did:hsk:agent:bob".to_string(),
+            iat: "2026-04-29T14:02:11Z".to_string(),
+            nbf: "2026-04-29T14:02:11Z".to_string(),
+            exp: "2026-04-29T14:32:11Z".to_string(),
+            capabilities: vec![Capability {
+                name: "billing.invoices.read".to_string(),
+                constraints: Some(json!({"max_invoices": 100})),
+                delegable: Some(false),
+            }],
+            sub_delegation_depth_remaining: 0,
+            parent_delegation_id: Some("dt_root".to_string()),
+            alg: SignatureAlgorithm::EdDsa,
+            signature: None,
+        };
+        let leaf_msg = bytes_to_sign(&spliced_leaf).expect("canonicalize leaf");
+        spliced_leaf.signature = Some(mallory_kp.sign_b64(&leaf_msg));
+
+        let mut request = HandshakeRequest {
+            version: SPEC_VERSION.to_string(),
+            kind: "HandshakeRequest".to_string(),
+            id: "hs_chain_broken".to_string(),
+            iss: "did:hsk:agent:bob".to_string(),
+            aud: svc_did.to_string(),
+            iat: "2026-04-29T14:14:32Z".to_string(),
+            nonce: "chain-broken-nonce-9001".to_string(),
+            agent_attestation: json!({"deployer": "did:hsk:org:deployer", "model": "claude-sonnet-4-5"}),
+            capability: Capability {
+                name: "billing.invoices.read".to_string(),
+                constraints: Some(json!({"max_invoices": 100})),
+                delegable: None,
+            },
+            delegation_chain: vec![root, spliced_leaf],
+            alg: SignatureAlgorithm::EdDsa,
+            signature: None,
+        };
+        let req_msg = bytes_to_sign(&request).expect("canonicalize req");
+        request.signature = Some(agent_kp.sign_b64(&req_msg));
+
+        let mut resolver = StaticKeyResolver::new();
+        resolver.insert("did:hsk:user:alice", user_kp.public_key());
+        resolver.insert("did:hsk:attacker:mallory", mallory_kp.public_key());
+        resolver.insert("did:hsk:agent:bob", agent_kp.public_key());
+
+        let mut nonces = InMemoryNonceStore::new(120);
+        let revs = StaticRevocationResolver::default();
+        let mut ctx = VerifyContext {
+            receiver_did: svc_did,
+            now: parse_ts("2026-04-29T14:14:32Z").unwrap(),
+            skew_secs: DEFAULT_SKEW_SECS,
+            keys: &resolver,
+            nonces: &mut nonces,
+            revocations: &revs,
+        };
+        let err = verify_handshake_request(&request, &mut ctx).expect_err("must reject");
+        assert_eq!(err.error_code, ErrorCode::ChainBroken);
+        assert_eq!(err.rejected_at_step, RejectStep::DelegationChainWalk);
+        assert_eq!(err.rejected_delegation_id.as_deref(), Some("dt_spliced"));
+        assert!(
+            err.detail.contains("does not match prior link sub"),
+            "detail should explain the integrity violation, got: {}",
+            err.detail
+        );
     }
 }
