@@ -66,6 +66,13 @@ impl StaticKeyResolver {
     pub fn insert(&mut self, did: impl Into<String>, public_key: [u8; 32]) -> Option<[u8; 32]> {
         self.keys.insert(did.into(), public_key)
     }
+
+    /// Iterate over `(did, public_key)` pairs. Useful for FFI tests that
+    /// need to repackage the resolver into the `HashMap` shape
+    /// [`verify_from_json`] consumes.
+    pub fn iter(&self) -> impl Iterator<Item = (String, [u8; 32])> + '_ {
+        self.keys.iter().map(|(k, v)| (k.clone(), *v))
+    }
 }
 
 impl KeyResolver for StaticKeyResolver {
@@ -89,6 +96,27 @@ pub struct InMemoryNonceStore {
     seen: HashMap<String, DateTime<Utc>>,
     /// How long to remember a nonce before evicting it.
     pub ttl_secs: i64,
+}
+
+/// Process-shared default nonce store used by the FFI helpers
+/// ([`verify_from_json`], [`verify_to_json_string`]) so that replay
+/// protection actually spans calls inside the same Python / Node process.
+/// Spec §11 recommends a 120 s TTL window (twice the freshness skew).
+fn default_nonce_store() -> &'static std::sync::Mutex<InMemoryNonceStore> {
+    static STORE: std::sync::OnceLock<std::sync::Mutex<InMemoryNonceStore>> =
+        std::sync::OnceLock::new();
+    STORE.get_or_init(|| std::sync::Mutex::new(InMemoryNonceStore::new(120)))
+}
+
+/// Resets the process-shared default nonce store. Intended for tests and
+/// for benchmark harnesses that want a clean slate between scenarios.
+/// Production callers should construct their own [`InMemoryNonceStore`]
+/// (or a `NonceStore` impl backed by Postgres / Redis) and call
+/// [`verify_handshake_request`] directly.
+pub fn reset_default_nonce_store_for_tests() {
+    if let Ok(mut s) = default_nonce_store().lock() {
+        *s = InMemoryNonceStore::new(120);
+    }
 }
 
 impl InMemoryNonceStore {
@@ -744,7 +772,12 @@ pub fn verify_from_json(
     for (did, pk) in keys {
         resolver.insert(did, *pk);
     }
-    let mut nonces = InMemoryNonceStore::new(120);
+    // Use the process-shared default nonce store so a replayed request hitting
+    // the same FFI process is rejected on the second call. Production callers
+    // that need cross-instance dedup wire their own NonceStore (e.g. Postgres
+    // per ADR-0007) and call `verify_handshake_request` directly.
+    let store = default_nonce_store();
+    let mut nonces_guard = store.lock().expect("nonce store mutex poisoned");
     let revs = StaticRevocationResolver {
         revoked_principals: revoked_principals.to_vec(),
         revoked_delegations: revoked_delegations.to_vec(),
@@ -754,7 +787,7 @@ pub fn verify_from_json(
         now,
         skew_secs: DEFAULT_SKEW_SECS,
         keys: &resolver,
-        nonces: &mut nonces,
+        nonces: &mut *nonces_guard,
         revocations: &revs,
     };
     Ok(verify_handshake_request(&req, &mut ctx))
@@ -1065,6 +1098,40 @@ mod tests {
         };
         let err = verify_handshake_request(&req, &mut ctx).expect_err("revoked");
         assert_eq!(err.error_code, ErrorCode::CredentialRevoked);
+    }
+
+    /// FFI surface: `verify_to_json_string` MUST share replay state across
+    /// successive calls inside the same process. Otherwise a Python or
+    /// Node caller could replay the exact same request and have it accepted.
+    /// This guards the process-shared default nonce store wired in
+    /// `verify_from_json`.
+    #[test]
+    fn ffi_verify_to_json_string_rejects_replay_across_calls() {
+        // Reset the shared store so this test is hermetic regardless of
+        // ordering with other tests in the same process.
+        reset_default_nonce_store_for_tests();
+
+        let (req, resolver, svc_did) = build_valid();
+        let request_json = serde_json::to_string(&req).expect("serialize req");
+        let keys: HashMap<String, [u8; 32]> = resolver.iter().collect();
+        let now = "2026-04-29T14:14:32Z";
+
+        let first = verify_to_json_string(&request_json, &keys, &svc_did, now, &[], &[])
+            .expect("first call ok");
+        let first: serde_json::Value = serde_json::from_str(&first).unwrap();
+        assert_eq!(first["result"], "accept", "first call must accept");
+
+        let second = verify_to_json_string(&request_json, &keys, &svc_did, now, &[], &[])
+            .expect("second call ok");
+        let second: serde_json::Value = serde_json::from_str(&second).unwrap();
+        assert_eq!(second["result"], "reject", "second call must reject");
+        assert_eq!(
+            second["error_code"], "replay_detected",
+            "replay must be detected by the FFI's process-shared nonce store"
+        );
+
+        // Leave the store clean for subsequent tests.
+        reset_default_nonce_store_for_tests();
     }
 
     /// Step 7d enforcement: a two-link chain whose middle link's `iss` does

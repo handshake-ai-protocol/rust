@@ -364,6 +364,86 @@ fn run_all_vectors() -> Vec<Value> {
         .collect()
 }
 
+/// Cross-call replay protection: verify vector 001 twice in a row sharing
+/// a single nonce store. The first call must accept; the second must
+/// reject with `replay_detected`. This mirrors what the Py / TS / Go
+/// runners do via their FFI's process-shared nonce store.
+fn run_replay_check() -> Value {
+    let raw =
+        fs::read_to_string(format!("{VECTORS_DIR}/001-valid-handshake.json")).expect("read 001");
+    let v: Value = serde_json::from_str(&raw).expect("parse vector 001");
+    let context = &v["context"];
+    let now_str = context["now"].as_str().unwrap().to_string();
+    let public_keys = context["public_keys"].as_object().unwrap().clone();
+    let keys = synthesize_keys(&public_keys);
+
+    let input = &v["input"];
+    let mut signed_chain = Vec::new();
+    if let Some(single) = input.get("delegation") {
+        signed_chain.push(sign_link(single.clone(), &keys));
+    }
+    if let Some(arr) = input.get("delegation_chain").and_then(Value::as_array) {
+        for link in arr {
+            signed_chain.push(sign_link(link.clone(), &keys));
+        }
+    }
+    let mut request = input["request"].clone();
+    request
+        .as_object_mut()
+        .unwrap()
+        .insert("delegation_chain".into(), Value::Array(signed_chain));
+    let signed_request = sign_request(request, &keys);
+
+    let mut resolver = StaticKeyResolver::new();
+    for (did, kp) in &keys {
+        resolver.insert(did, kp.public_key());
+    }
+    // ONE nonce store, TWO verify calls — that's the whole point of this check.
+    let mut nonces = InMemoryNonceStore::new(120);
+    let revs = StaticRevocationResolver::default();
+    let req_struct: handshake::models::HandshakeRequest =
+        serde_json::from_value(signed_request).expect("parse signed request");
+    let receiver_did = req_struct.aud.clone();
+    let now = chrono::DateTime::parse_from_rfc3339(&now_str)
+        .unwrap()
+        .with_timezone(&chrono::Utc);
+
+    let mut ctx = VerifyContext {
+        receiver_did: &receiver_did,
+        now,
+        skew_secs: DEFAULT_SKEW_SECS,
+        keys: &resolver,
+        nonces: &mut nonces,
+        revocations: &revs,
+    };
+    let first = verify_handshake_request(&req_struct, &mut ctx);
+    let first_result = if first.is_ok() { "accept" } else { "reject" };
+
+    // SECOND call. Same signed request, same nonce store.
+    let mut ctx2 = VerifyContext {
+        receiver_did: &receiver_did,
+        now,
+        skew_secs: DEFAULT_SKEW_SECS,
+        keys: &resolver,
+        nonces: &mut nonces,
+        revocations: &revs,
+    };
+    let second = verify_handshake_request(&req_struct, &mut ctx2);
+    let (second_result, second_error_code) = match &second {
+        Ok(_) => ("accept", None),
+        Err(r) => ("reject", Some(r.error_code.as_str().to_string())),
+    };
+    let passed = first_result == "accept"
+        && second_result == "reject"
+        && second_error_code.as_deref() == Some("replay_detected");
+    json!({
+        "first_result": first_result,
+        "second_result": second_result,
+        "second_error_code": second_error_code,
+        "passed": passed,
+    })
+}
+
 fn vendor_label() -> &'static str {
     "rust"
 }
@@ -387,6 +467,7 @@ fn main() {
         "mldsa65_kat": run_mldsa65_kat(),
         "vector_001": vector_001_phase1_compat(),
         "vectors": run_all_vectors(),
+        "replay_check": run_replay_check(),
     });
     println!(
         "{}",
