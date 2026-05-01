@@ -77,9 +77,30 @@ impl Keypair {
     }
 
     /// Private-key bytes (length [`PRIVATE_KEY_LEN`]).
+    ///
+    /// We deliberately use FIPS 204 §Algorithm 24 `skEncode` (the 4032-byte
+    /// expanded form) rather than the 32-byte seed-only form. Three reasons:
+    ///
+    ///   1. The wire format documented at the top of this module pins
+    ///      `PRIVATE_KEY_LEN = 4032`, and downstream FFI callers
+    ///      (`handshake-py` and `handshake-ts`) re-export this length as a
+    ///      stable public API contract — switching to the 32-byte seed form
+    ///      would be a silent breaking change for every consumer.
+    ///   2. FIPS 204 §Algorithm 24 is byte-spec'd, so any conforming
+    ///      implementation produces identical 4032 bytes for a given seed,
+    ///      preserving cross-implementation interop.
+    ///   3. The `ml-dsa` crate's deprecation note recommends
+    ///      `SigningKey::to_seed`, but that returns 32 bytes — a different
+    ///      object — so the suggestion does not apply to our use case.
+    ///
+    /// The `#[allow(deprecated)]` therefore documents an intentional, audited
+    /// choice rather than an oversight, and prevents a future maintainer from
+    /// "fixing" the warning by swapping in `to_seed` and silently breaking
+    /// the FFI contract.
     #[must_use]
     pub fn private_key(&self) -> Vec<u8> {
         use ml_dsa::ExpandedSigningKeyBytes;
+        #[allow(deprecated)]
         let encoded: ExpandedSigningKeyBytes<MlDsa65> = self.keypair.signing_key().to_expanded();
         encoded.to_vec()
     }
