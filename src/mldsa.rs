@@ -31,7 +31,7 @@
 use crate::error::Error;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine;
-use ml_dsa::{signature::Verifier, KeyGen, MlDsa65};
+use ml_dsa::{signature::Verifier, signature::Keypair as _, KeyGen, MlDsa65};
 use rand_core::{OsRng, RngCore};
 
 /// Public-key length for ML-DSA-65 (FIPS 204).
@@ -44,7 +44,7 @@ pub const SIGNATURE_LEN: usize = 3309;
 /// An ML-DSA-65 keypair. The signing key is held in memory; the verifying key
 /// is derived on demand.
 pub struct Keypair {
-    keypair: ml_dsa::KeyPair<MlDsa65>,
+    keypair: ml_dsa::SigningKey<MlDsa65>,
 }
 
 impl Keypair {
@@ -64,7 +64,7 @@ impl Keypair {
     #[must_use]
     pub fn from_seed(seed: &[u8; 32]) -> Self {
         let arr: ml_dsa::B32 = (*seed).into();
-        let keypair = MlDsa65::key_gen_internal(&arr);
+        let keypair = MlDsa65::from_seed(&arr);
         Self { keypair }
     }
 
@@ -79,8 +79,8 @@ impl Keypair {
     /// Private-key bytes (length [`PRIVATE_KEY_LEN`]).
     #[must_use]
     pub fn private_key(&self) -> Vec<u8> {
-        use ml_dsa::EncodedSigningKey;
-        let encoded: EncodedSigningKey<MlDsa65> = self.keypair.signing_key().encode();
+        use ml_dsa::ExpandedSigningKeyBytes;
+        let encoded: ExpandedSigningKeyBytes<MlDsa65> = self.keypair.signing_key().to_expanded();
         encoded.to_vec()
     }
 
