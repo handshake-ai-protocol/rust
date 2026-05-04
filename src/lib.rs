@@ -36,4 +36,4 @@ pub use error::Error;
 
 /// Spec version this crate implements. Pinned so callers can detect mismatch
 /// against the schemas in `packages/handshake-spec/`.
-pub const SPEC_VERSION: &str = "0.2.3";
+pub const SPEC_VERSION: &str = "0.2.4";
