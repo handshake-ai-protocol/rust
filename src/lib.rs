@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 //! Handshake protocol — canonical Rust implementation.
 //!
 //! This crate ships the cryptographic primitives the entire Handshake stack

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 //! Chain-walk verifier — Phase 2's main deliverable.
 //!
 //! Steps in the order the spec mandates (handoff §7 Phase 2 + Implementation

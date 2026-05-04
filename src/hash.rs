@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 //! SHA-256 wrapper — the digest the spec requires (`_common.json#/$defs/hashAlgorithm`).
 //!
 //! Thin so callers don't depend on `sha2` directly; lets us add SHA3-256

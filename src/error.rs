@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 //! Crate-wide error type. Kept narrow so callers can pattern-match on causes
 //! (signature failure vs. canonicalization failure vs. malformed key) without
 //! needing string parsing.

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 //! Serde models mirroring the v0.2.3 JSON Schemas under
 //! `packages/handshake-spec/schemas/v0.2.3/`.
 //!

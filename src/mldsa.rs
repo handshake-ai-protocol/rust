@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 //! ML-DSA-65 — FIPS 204 post-quantum digital signatures.
 //!
 //! ML-DSA-65 is one of the three signature algorithms enumerated by the spec

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 //! Ed25519 sign and verify, plus base64url helpers used by the rest of the
 //! Handshake stack. Keys are 32-byte raw seeds (RFC 8032 §5.1.5);
 //! signatures are 64-byte raw byte strings encoded as base64url-without-padding

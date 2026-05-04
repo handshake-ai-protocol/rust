@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 //! Rust conformance runner. Reads the shared fixtures + the v0.2.3 core test
 //! vectors (001, 002, 003), drives them through the chain-walk verifier, and
 //! emits a JSON report on stdout matching the schema consumed by

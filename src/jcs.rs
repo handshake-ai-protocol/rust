@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 //! RFC 8785 — JSON Canonicalization Scheme (JCS).
 //!
 //! Delegates to the `serde_jcs` crate, which implements:

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 //! Lattice axioms for the capability-intersection algebra.
 //!
 //! Per spec §10 the intersection operator MUST satisfy four laws so that the

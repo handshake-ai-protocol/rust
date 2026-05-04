@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 //! Capability intersection — the constraint algebra spec §10 calls out as the
 //! security-critical core of the verifier. When a delegation grants a
 //! capability with a constraint set `C_d` and a request asks for that
