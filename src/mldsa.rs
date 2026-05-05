@@ -32,7 +32,7 @@
 use crate::error::Error;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine;
-use ml_dsa::{signature::Verifier, signature::Keypair as _, KeyGen, MlDsa65};
+use ml_dsa::{signature::Keypair as _, signature::Verifier, KeyGen, MlDsa65};
 use rand_core::{OsRng, RngCore};
 
 /// Public-key length for ML-DSA-65 (FIPS 204).

@@ -1,6 +1,6 @@
 [package]
 name = "handshake"
-version = "0.2.4"
+version = "0.2.3"
 edition = "2021"
 license = "Apache-2.0"
 description = "Handshake protocol — canonical reference implementation. RFC 8785 JCS canonicalization, SHA-256, Ed25519, ML-DSA-65, plus serde models generated from the v0.2.3 JSON Schemas. The Python (PyO3) and TypeScript (NAPI-RS) SDKs are thin FFI shims over this crate."
