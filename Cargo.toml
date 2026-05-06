@@ -4,7 +4,7 @@ version = "0.2.3"
 edition = "2021"
 license = "Apache-2.0"
 description = "Handshake protocol — canonical reference implementation. RFC 8785 JCS canonicalization, SHA-256, Ed25519, ML-DSA-65, plus serde models generated from the v0.2.3 JSON Schemas. The Python (PyO3) and TypeScript (NAPI-RS) SDKs are thin FFI shims over this crate."
-repository = "https://github.com/handshake-protocol/handshake-ai"
+repository = "https://github.com/handshake-ai-protocol/handshake-ai"
 rust-version = "1.78"
 
 [lib]
